@@ -2,7 +2,10 @@ import json
 from abc import ABC, abstractmethod
 from typing import Dict, NamedTuple, List
 import re
+import ast
+import json5
 from superagi.helper.json_cleaner import JsonCleaner
+from superagi.lib.logger import logger
 
 
 class AgentGPTAction(NamedTuple):
@@ -20,14 +23,30 @@ class BaseOutputParser(ABC):
     def parse(self, text: str) -> AgentGPTAction:
         """Return AgentGPTAction"""
 
+class AgentSchemaOutputParser(BaseOutputParser):
+    def parse(self, response: str) -> AgentGPTAction:
+        if response.startswith("```") and response.endswith("```"):
+            response = "```".join(response.split("```")[1:-1])
+            response = JsonCleaner.extract_json_section(response)
 
+        # OpenAI returns `str(content_dict)`, literal_eval reverses this
+        try:
+            logger.debug("AgentSchemaOutputParser: ", response)
+            response_obj = ast.literal_eval(response)
+            return AgentGPTAction(
+                name=response_obj['tool']['name'],
+                args=response_obj['tool']['args'],
+            )
+        except BaseException as e:
+            logger.info(f"AgentSchemaOutputParser: Error parsing JSON respons {e}")
+            return {}
 
 class AgentOutputParser(BaseOutputParser):
     def parse(self, text: str) -> AgentGPTAction:
         try:
-            print(text)
+            logger.info(text)
             text = JsonCleaner.check_and_clean_json(text)
-            parsed = json.loads(text, strict=False)
+            parsed = json5.loads(text)
         except json.JSONDecodeError:
             return AgentGPTAction(
                 name="ERROR",
@@ -38,32 +57,39 @@ class AgentOutputParser(BaseOutputParser):
             format_suffix_yellow = "\033[0m\033[0m"
             format_prefix_green = "\033[92m\033[1m"
             format_suffix_green = "\033[0m\033[0m"
-            print(format_prefix_green + "Intelligence : " + format_suffix_green)
+            logger.info(format_prefix_green + "Intelligence : " + format_suffix_green)
             if "text" in parsed["thoughts"]:
-                print(format_prefix_yellow + "Thoughts: " + format_suffix_yellow + parsed["thoughts"]["text"] + "\n")
+                logger.info(format_prefix_yellow + "Thoughts: " + format_suffix_yellow + parsed["thoughts"]["text"] + "\n")
+
             if "reasoning" in parsed["thoughts"]:
-                print(format_prefix_yellow + "Reasoning: " + format_suffix_yellow + parsed["thoughts"]["reasoning"] + "\n")
+                logger.info(format_prefix_yellow + "Reasoning: " + format_suffix_yellow + parsed["thoughts"]["reasoning"] + "\n")
 
             if "plan" in parsed["thoughts"]:
-                print(format_prefix_yellow + "Plan: " + format_suffix_yellow + parsed["thoughts"]["plan"] + "\n")
+                logger.info(format_prefix_yellow + "Plan: " + format_suffix_yellow + str(parsed["thoughts"]["plan"]) + "\n")
 
             if "criticism" in parsed["thoughts"]:
-                print(format_prefix_yellow + "Criticism: " + format_suffix_yellow + parsed["thoughts"]["criticism"] + "\n")
+                logger.info(format_prefix_yellow + "Criticism: " + format_suffix_yellow + parsed["thoughts"]["criticism"] + "\n")
 
-            print(format_prefix_green + "Action : " + format_suffix_green)
+            logger.info(format_prefix_green + "Action : " + format_suffix_green)
             # print(format_prefix_yellow + "Args: "+ format_suffix_yellow + parsed["tool"]["args"] + "\n")
+            if "tool" not in parsed:
+                raise Exception("No tool found in the response..")
             if parsed["tool"] is None or not parsed["tool"]:
                 return AgentGPTAction(name="", args="")
             if "name" in parsed["tool"]:
-                print(format_prefix_yellow + "Tool: " + format_suffix_yellow + parsed["tool"]["name"] + "\n")
+                logger.info(format_prefix_yellow + "Tool: " + format_suffix_yellow + parsed["tool"]["name"] + "\n")
+            args = {}
+            if "args" in parsed["tool"]:
+                args = parsed["tool"]["args"]
             return AgentGPTAction(
                 name=parsed["tool"]["name"],
-                args=parsed["tool"]["args"],
+                args=args,
             )
-        except (KeyError, TypeError):
+        except (KeyError, TypeError) as e:
+            logger.error(f"Error parsing output:", e)
             # If the tool is null or incomplete, return an erroneous tool
             return AgentGPTAction(
-                name="ERROR", args={"error": f"Incomplete tool args: {parsed}"}
+                name="ERROR", args={"error": f"Unable to parse the output: {parsed}"}
             )
 
     def parse_tasks(self, text: str) -> AgentTasks:
@@ -78,7 +104,7 @@ class AgentOutputParser(BaseOutputParser):
                     error=f"Could not parse invalid json: {text}",
                 )
         try:
-            print("Tasks: ", parsed["tasks"])
+            logger.info("Tasks: ", parsed["tasks"])
             return AgentTasks(
                 tasks=parsed["tasks"]
             )
@@ -87,5 +113,3 @@ class AgentOutputParser(BaseOutputParser):
             return AgentTasks(
                 error=f"Incomplete tool args: {parsed}",
             )
-
-
